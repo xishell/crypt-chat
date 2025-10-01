@@ -1,0 +1,37 @@
+# Compiled object files
+*.o
+*.obj
+*.elf
+
+# Compiled executables
+*.exe
+*.out
+*.app
+*.hex
+
+# Build directories
+build/
+dist/
+
+# Debug files
+*.dSYM/
+*.su
+*.map
+
+# Dependencies
+*.d
+
+# Editor/IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.clangd
+.DS_Store
+
+# Compilation database
+compile_commands.json
+
+# Cache directories
+.cache/

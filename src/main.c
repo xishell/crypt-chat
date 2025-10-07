@@ -64,6 +64,43 @@ void process_rx_char(char c) {
     printc(c);
 }
 
+/* Hardware timer delay (cycle-accurate) */
+void timer_delay_cycles_tx(unsigned int cycles) {
+    *TIMER_CONTROL = 0x08; /* STOP */
+    *TIMER_PERIODL = cycles & 0xFFFF;
+    *TIMER_PERIODH = (cycles >> 16) & 0xFFFF;
+    *TIMER_CONTROL = 0x04; /* START one-shot */
+    while ((*TIMER_STATUS & 0x01) == 0); /* Wait for timeout */
+    *TIMER_STATUS = 0; /* Clear */
+}
+
+/* Send single character with hardware timer (accurate) */
+void uart_putc_safe(uart_config_t *config, char c) {
+    /* Calculate cycles per bit (30 MHz / baud) */
+    unsigned int bit_delay_cycles = (30000000 / config->baud);
+
+    /* Start bit (low) */
+    gpio_write(config->tx_pin, 0);
+    timer_delay_cycles_tx(bit_delay_cycles);
+
+    /* Data bits (LSB first) */
+    for (int i = 0; i < 8; i++) {
+        gpio_write(config->tx_pin, (c >> i) & 0x1);
+        timer_delay_cycles_tx(bit_delay_cycles);
+    }
+
+    /* Stop bit (high) */
+    gpio_write(config->tx_pin, 1);
+    timer_delay_cycles_tx(bit_delay_cycles);
+}
+
+/* Send string with pure busy-wait */
+void uart_puts_safe(uart_config_t *config, const char *str) {
+    while (*str) {
+        uart_putc_safe(config, *str++);
+    }
+}
+
 /* Send message triggered by button */
 void send_message(uart_config_t *uart) {
     /* Read switch values as message */
@@ -96,8 +133,16 @@ void send_message(uart_config_t *uart) {
     print(message);
     print("]\n");
 
-    /* Send via UART */
-    chat_send_message(uart, message);
+    /* Stop timer interrupt during TX */
+    *TIMER_CONTROL = 0x08; /* STOP */
+
+    /* Send via UART - plain text using safe busy-wait */
+    uart_puts_safe(uart, message);
+
+    /* Restart timer interrupt for RX */
+    uart_rx_init_interrupt(uart);
+
+    print("[Sent!]\n");
 
     /* Visual feedback */
     led_toggle(0);

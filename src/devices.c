@@ -19,6 +19,24 @@ static const unsigned char seg_table[16] = {
     0x88, 0x83, 0xC6, 0xA1, 0x86, 0x8E /* A-F */
 };
 
+/* Extended character encoding for display_string */
+static const unsigned char char_table[128] = {
+    [' '] = 0xFF, ['-'] = 0xBF, ['_'] = 0xF7,
+    ['0'] = 0xC0, ['1'] = 0xF9, ['2'] = 0xA4, ['3'] = 0xB0, ['4'] = 0x99,
+    ['5'] = 0x92, ['6'] = 0x82, ['7'] = 0xF8, ['8'] = 0x80, ['9'] = 0x90,
+    ['A'] = 0x88, ['a'] = 0x88,
+    ['B'] = 0x83, ['b'] = 0x83,
+    ['C'] = 0xC6, ['c'] = 0xC6,
+    ['D'] = 0xA1, ['d'] = 0xA1,
+    ['E'] = 0x86, ['e'] = 0x86,
+    ['F'] = 0x8E, ['f'] = 0x8E,
+    ['H'] = 0x89, ['h'] = 0x89,
+    ['L'] = 0xC7, ['l'] = 0xC7,
+    ['O'] = 0xC0, ['o'] = 0xC0,
+    ['P'] = 0x8C, ['p'] = 0x8C,
+    ['U'] = 0xC1, ['u'] = 0xC1,
+};
+
 /* LED driver state */
 static volatile unsigned int *led_ptr = (volatile unsigned int *)LED_BASE;
 static unsigned int led_state = 0;
@@ -60,9 +78,8 @@ unsigned int led_get(void) { return led_state; }
 
 /* ===== 7-Segment Display Functions ===== */
 
-void display_init(void) { display_clear_all(); }
-
-void display_set(int display_num, unsigned char value) {
+/* Low-level helper: write raw segment value to display */
+static void display_set_raw(int display_num, unsigned char value) {
     if (display_num < 0 || display_num >= NUM_DISPLAYS)
         return;
 
@@ -71,14 +88,12 @@ void display_set(int display_num, unsigned char value) {
     *addr = value & 0xFF;
 }
 
-void display_set_hex(int display_num, unsigned char digit) {
-    if (digit < 16) {
-        display_set(display_num, seg_table[digit]);
-    }
+void display_init(void) {
+    display_clear_all();
 }
 
 void display_clear(int display_num) {
-    display_set(display_num, 0xFF); /* All segments off */
+    display_set_raw(display_num, 0xFF); /* All segments off */
 }
 
 void display_clear_all(void) {
@@ -87,22 +102,58 @@ void display_clear_all(void) {
     }
 }
 
-void display_number(unsigned int number) {
-    /* Display number in hexadecimal across all 6 displays */
-    for (int i = 0; i < NUM_DISPLAYS; i++) {
-        unsigned char digit = (number >> (i * 4)) & 0xF;
-        display_set_hex(i, digit);
+void display_digit(int display_num, unsigned char digit) {
+    if (digit < 16) {
+        display_set_raw(display_num, seg_table[digit]);
     }
 }
 
-void display_time(int hours, int minutes, int seconds) {
-    /* Format: HH:MM:SS on 6 displays */
-    display_set_hex(0, seconds % 10);
-    display_set_hex(1, seconds / 10);
-    display_set_hex(2, minutes % 10);
-    display_set_hex(3, minutes / 10);
-    display_set_hex(4, hours % 10);
-    display_set_hex(5, hours / 10);
+void display_hex(unsigned int number) {
+    /* Display number in hexadecimal (max 0xFFFFFF for 6 displays) */
+    for (int i = 0; i < NUM_DISPLAYS; i++) {
+        unsigned char digit = (number >> ((NUM_DISPLAYS - 1 - i) * 4)) & 0xF;
+        display_digit(NUM_DISPLAYS - 1 - i, digit);
+    }
+}
+
+void display_decimal(unsigned int number) {
+    /* Display number in decimal (max 999999 for 6 displays) */
+    if (number > 999999) {
+        number = 999999;
+    }
+
+    /* Extract decimal digits */
+    int leading_zero = 1;
+    for (int i = NUM_DISPLAYS - 1; i >= 0; i--) {
+        unsigned char digit = (number / 1) % 10;
+
+        /* Skip leading zeros except for the last digit */
+        if (digit == 0 && leading_zero && i > 0) {
+            display_clear(i);
+        } else {
+            display_digit(i, digit);
+            leading_zero = 0;
+        }
+
+        number /= 10;
+    }
+}
+
+void display_string(const char *str) {
+    /* Display up to 6 characters from left to right */
+    int display_pos = NUM_DISPLAYS - 1;
+
+    /* Clear all displays first */
+    display_clear_all();
+
+    /* Fill from right to left */
+    for (int i = 0; str[i] != '\0' && display_pos >= 0; i++) {
+        unsigned char c = str[i];
+        if (c < 128 && char_table[c] != 0) {
+            display_set_raw(display_pos, char_table[c]);
+            display_pos--;
+        }
+    }
 }
 
 /* ===== Button Functions ===== */
@@ -114,18 +165,6 @@ void button_init(void) {
 int button_is_pressed(void) {
     volatile unsigned int *btn_ptr = (volatile unsigned int *)BTN_BASE;
     return (*btn_ptr & 0x1) != 0;
-}
-
-int button_wait_press(void) {
-    while (!button_is_pressed())
-        ;
-    return 1;
-}
-
-int button_wait_release(void) {
-    while (button_is_pressed())
-        ;
-    return 1;
 }
 
 /* ===== Switch Functions ===== */
@@ -158,7 +197,7 @@ void gpio_init(void) {
 }
 
 void gpio_set_direction(int pin, int output) {
-    if (pin < 0 || pin >= 40)
+    if (pin < 0 || pin >= GPIO_PIN_COUNT)
         return;
 
     volatile unsigned int *gpio_dir;
@@ -180,7 +219,7 @@ void gpio_set_direction(int pin, int output) {
 }
 
 void gpio_write(int pin, int value) {
-    if (pin < 0 || pin >= 40)
+    if (pin < 0 || pin >= GPIO_PIN_COUNT)
         return;
 
     volatile unsigned int *gpio_data;
@@ -202,7 +241,7 @@ void gpio_write(int pin, int value) {
 }
 
 int gpio_read(int pin) {
-    if (pin < 0 || pin >= 40)
+    if (pin < 0 || pin >= GPIO_PIN_COUNT)
         return 0;
 
     volatile unsigned int *gpio_data;
@@ -217,4 +256,22 @@ int gpio_read(int pin) {
     }
 
     return (*gpio_data >> bit) & 0x1;
+}
+
+void gpio_toggle(int pin) {
+    if (pin < 0 || pin >= GPIO_PIN_COUNT)
+        return;
+
+    volatile unsigned int *gpio_data;
+    int bit;
+
+    if (pin < 20) {
+        gpio_data = (volatile unsigned int *)GPIO1_BASE;
+        bit = pin;
+    } else {
+        gpio_data = (volatile unsigned int *)GPIO2_BASE;
+        bit = pin - 20;
+    }
+
+    *gpio_data ^= (1 << bit); /* Toggle bit */
 }

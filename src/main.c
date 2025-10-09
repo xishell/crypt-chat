@@ -4,6 +4,23 @@
 #include "dtekv-lib.h"
 #include "uart.h"
 
+/* Simple placeholder transform for demo (XOR). */
+static void xor_transform(const unsigned char *in, int len,
+                          unsigned char *out) {
+    for (int i = 0; i < len; i++) out[i] = in[i] ^ 0x5A;
+}
+
+static int mostly_printable(const unsigned char *buf, int len) {
+    if (len <= 0) return 1;
+    int printable = 0;
+    for (int i = 0; i < len; i++) {
+        unsigned char c = buf[i];
+        if ((c >= 0x20 && c <= 0x7E) || c == '\r' || c == '\n' || c == '\t')
+            printable++;
+    }
+    return (printable * 100 / len) >= 80; /* 80% threshold */
+}
+
 volatile int send_flag = 0;
 
 static chat_framer_t framer;
@@ -176,8 +193,22 @@ int main(void) {
                             printc(unstuffed[i]);
                         }
                         print("\n");
-                        send_user_message(&esp_uart, user_id, &unstuffed[1],
-                                          msg_len);
+
+                        /* Encrypt plaintext, decrypt ciphertext, then echo that. */
+                        unsigned char alt[CHAT_MAX_MESSAGE];
+                        int plain_like = mostly_printable(&unstuffed[1], msg_len);
+                        xor_transform(&unstuffed[1], msg_len, alt);
+                        if (plain_like) {
+                            print("[ENC] ");
+                            for (int i = 0; i < msg_len; i++) printc(alt[i]);
+                            print("\n");
+                        } else {
+                            print("[DEC] ");
+                            for (int i = 0; i < msg_len; i++) printc(alt[i]);
+                            print("\n");
+                        }
+                        /* Echo transformed for others */
+                        send_user_message(&esp_uart, user_id, alt, msg_len);
                         led_toggle(0);
                     } else {
                         print("\n[ERROR] CRC mismatch\n");

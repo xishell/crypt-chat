@@ -12,6 +12,7 @@ Example:
 """
 
 import sys
+import argparse
 import socket
 import select
 import threading
@@ -24,7 +25,7 @@ CHAT_MAX_MESSAGE = 127
 CHAT_MAX_FRAME = 256
 
 # User IDs
-USER_ID_BOARD = 0x01
+USER_ID_BOARD = 0x00
 USER_ID_CLIENT = 0x02
 
 class RxState(Enum):
@@ -153,6 +154,30 @@ class ChatClient:
         self.rx_frame_buffer = bytearray()
         self.rx_expected_length = 0
 
+    @staticmethod
+    def _xor_transform(data: bytes) -> bytes:
+        return bytes([b ^ 0x5A for b in data])
+
+    @staticmethod
+    def _mostly_printable(data: bytes) -> bool:
+        if not data:
+            return True
+        printable = 0
+        for b in data:
+            if (0x20 <= b <= 0x7E) or b in (0x0D, 0x0A, 0x09):
+                printable += 1
+        return (printable * 100 // len(data)) >= 80
+
+    @staticmethod
+    def _printable_score(data: bytes) -> int:
+        if not data:
+            return 100
+        printable = 0
+        for b in data:
+            if (0x20 <= b <= 0x7E) or b in (0x0D, 0x0A, 0x09):
+                printable += 1
+        return (printable * 100) // len(data)
+
     def connect(self):
         """Connect to ESP8266 telnet server"""
         try:
@@ -215,7 +240,12 @@ class ChatClient:
                         # Ignore - this is our own message echoed back
                         pass
                     else:
-                        # TODO: Add decryption here
+                        # If we are not the board, pick the more readable variant
+                        if self.user_id != USER_ID_BOARD:
+                            dec = self._xor_transform(message)
+                            if self._printable_score(dec) >= self._printable_score(message):
+                                message = dec
+
                         try:
                             msg_str = message.decode('utf-8')
                             print(f"\n[RX from user 0x{user_id:02X}] {msg_str}")
@@ -250,8 +280,13 @@ class ChatClient:
     def send_message(self, message):
         """Encode and send message using protocol"""
         try:
-            # TODO: Add encryption here before encoding
-            frame = ChatProtocol.encode_frame(self.user_id, message)
+            payload = message
+            if isinstance(payload, str):
+                payload = payload.encode('utf-8')
+            # If we are not the board, encrypt before sending
+            if self.user_id != USER_ID_BOARD:
+                payload = self._xor_transform(payload)
+            frame = ChatProtocol.encode_frame(self.user_id, payload)
             self.sock.sendall(frame)
             print(f"[TX] {message}")
         except Exception as e:
@@ -290,18 +325,22 @@ class ChatClient:
             print("[Disconnected]")
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python3 chat_client.py <ESP8266_IP> [port]")
-        print("Example: python3 chat_client.py 192.168.4.1 23")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="Protocol Chat Client")
+    parser.add_argument("host", help="ESP8266 IP address")
+    parser.add_argument("port", nargs="?", type=int, default=23, help="Telnet port (default 23)")
+    parser.add_argument("--user-id", dest="user_id", type=lambda x: int(x, 0), default=USER_ID_CLIENT,
+                        help="User ID in hex or decimal (e.g. 0x02). Use 0x00 to act as 'board' (plaintext in, board encrypts).")
+    args = parser.parse_args()
 
-    host = sys.argv[1]
-    port = int(sys.argv[2]) if len(sys.argv) > 2 else 23
+    host = args.host
+    port = args.port
+    user_id = args.user_id & 0xFF
 
-    print("=== Protocol Chat Client (Remote User) ===")
+    print("=== Protocol Chat Client ===")
+    print(f"User ID: 0x{user_id:02X}")
     print(f"Connecting to {host}:{port}...\n")
 
-    client = ChatClient(host, port)
+    client = ChatClient(host, port, user_id=user_id)
     client.run()
 
 if __name__ == "__main__":

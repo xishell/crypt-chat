@@ -61,7 +61,7 @@ void uart_rx_debug_stats(void);
 #define CHAT_MAX_FRAME 256
 
 /* User IDs */
-#define USER_ID_BOARD 0x01
+#define USER_ID_BOARD 0x00
 #define USER_ID_CLIENT 0x02
 
 /* Protocol helpers moved to chat_protocol.h */

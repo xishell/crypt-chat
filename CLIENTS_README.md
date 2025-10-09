@@ -4,7 +4,7 @@ Single client: `chat_client_protocol.py`.
 
 Usage:
 ```bash
-python3 chat_client_protocol.py 192.168.4.1 [port]
+python3 chat_client_protocol.py 192.168.4.1 [port] [--user-id 0x02]
 ```
 
 Protocol:
@@ -15,7 +15,7 @@ CRC over USER_ID+MESSAGE
 ```
 
 User IDs:
-- 0x01 = Board (BTN1 messages)
+- 0x00 = Board (plaintext in; board encrypts on echo)
 - 0x02 = Client (default)
 
 Notes:

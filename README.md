@@ -26,7 +26,7 @@ python3 chat_client_protocol.py 192.168.4.1 [port]
 Notes:
 
 - Frame: `[0xAA 0xAA][LEN][STUFFED_DATA]`; unstuffed: `[USER_ID][MESSAGE][CRC16]` (CRC over USER_ID+MESSAGE)
-- Client `USER_ID=0x02`; board `USER_ID=0x01`
+- User IDs: `0x00` = board, `0x02` = client (default)
 - Client drops frames with its own `USER_ID`
 
 ## Source Layout
@@ -41,3 +41,6 @@ Notes:
 - `include/` — headers
 - `PROTOCOL.md` — protocol details (concise)
 - `chat_client_protocol.py` — Python telnet client (protocol)
+
+Client tips:
+- Set user id: `--user-id 0x02` (default). Use `--user-id 0x00` to act as board: send plaintext and let the board encrypt before echoing.

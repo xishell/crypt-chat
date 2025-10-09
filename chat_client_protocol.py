@@ -16,6 +16,7 @@ import argparse
 import socket
 import select
 import threading
+import os
 from enum import Enum
 
 # Protocol constants
@@ -27,6 +28,14 @@ CHAT_MAX_FRAME = 256
 # User IDs
 USER_ID_BOARD = 0x00
 USER_ID_CLIENT = 0x02
+
+# Demo key (32 bytes) shared with the board AEAD demo.
+KEY = bytearray([
+    0x60,0x61,0x62,0x63, 0x64,0x65,0x66,0x67,
+    0x68,0x69,0x6A,0x6B, 0x6C,0x6D,0x6E,0x6F,
+    0x70,0x71,0x72,0x73, 0x74,0x75,0x76,0x77,
+    0x78,0x79,0x7A,0x7B, 0x7C,0x7D,0x7E,0x7F,
+])
 
 class RxState(Enum):
     PLAINTEXT = 0
@@ -155,8 +164,99 @@ class ChatClient:
         self.rx_expected_length = 0
 
     @staticmethod
-    def _xor_transform(data: bytes) -> bytes:
-        return bytes([b ^ 0x5A for b in data])
+    # ---- ChaCha20 (minimal) ----
+    @staticmethod
+    def _rotl32(x, n):
+        return ((x << n) & 0xFFFFFFFF) | ((x & 0xFFFFFFFF) >> (32 - n))
+
+    @staticmethod
+    def _load32_le(b):
+        return b[0] | (b[1] << 8) | (b[2] << 16) | (b[3] << 24)
+
+    @staticmethod
+    def _store32_le(w):
+        return bytes([w & 0xFF, (w >> 8) & 0xFF, (w >> 16) & 0xFF, (w >> 24) & 0xFF])
+
+    @classmethod
+    def _quarter_round(cls, a, b, c, d):
+        a = (a + b) & 0xFFFFFFFF; d ^= a; d = cls._rotl32(d, 16)
+        c = (c + d) & 0xFFFFFFFF; b ^= c; b = cls._rotl32(b, 12)
+        a = (a + b) & 0xFFFFFFFF; d ^= a; d = cls._rotl32(d, 8)
+        c = (c + d) & 0xFFFFFFFF; b ^= c; b = cls._rotl32(b, 7)
+        return a, b, c, d
+
+    @classmethod
+    def _chacha_block(cls, state):
+        s = state[:]
+        for _ in range(10):
+            s[0], s[4], s[8], s[12] = cls._quarter_round(s[0], s[4], s[8], s[12])
+            s[1], s[5], s[9], s[13] = cls._quarter_round(s[1], s[5], s[9], s[13])
+            s[2], s[6], s[10], s[14] = cls._quarter_round(s[2], s[6], s[10], s[14])
+            s[3], s[7], s[11], s[15] = cls._quarter_round(s[3], s[7], s[11], s[15])
+            s[0], s[5], s[10], s[15] = cls._quarter_round(s[0], s[5], s[10], s[15])
+            s[1], s[6], s[11], s[12] = cls._quarter_round(s[1], s[6], s[11], s[12])
+            s[2], s[7], s[8], s[13] = cls._quarter_round(s[2], s[7], s[8], s[13])
+            s[3], s[4], s[9], s[14] = cls._quarter_round(s[3], s[4], s[9], s[14])
+        for i in range(16):
+            s[i] = (s[i] + state[i]) & 0xFFFFFFFF
+        return b"".join(cls._store32_le(w) for w in s)
+
+    @classmethod
+    def _chacha20_xor(cls, key: bytes, nonce: bytes, counter: int, data: bytes) -> bytes:
+        out = bytearray(len(data))
+        pos = 0
+        while pos < len(data):
+            state = [
+                0x61707865, 0x3320646E, 0x79622D32, 0x6B206574,
+            ] + [cls._load32_le(key[i:i+4]) for i in range(0, 32, 4)] + [
+                counter & 0xFFFFFFFF,
+                cls._load32_le(nonce[0:4]),
+                cls._load32_le(nonce[4:8]),
+                cls._load32_le(nonce[8:12]),
+            ]
+            block = cls._chacha_block(state)
+            take = min(64, len(data) - pos)
+            for i in range(take):
+                out[pos + i] = data[pos + i] ^ block[i]
+            counter = (counter + 1) & 0xFFFFFFFF
+            pos += take
+        return bytes(out)
+
+    # ---- Poly1305 (minimal) ----
+    @staticmethod
+    def _le_bytes_to_int(b: bytes) -> int:
+        v = 0
+        for i in range(len(b)):
+            v |= b[i] << (8 * i)
+        return v
+
+    @staticmethod
+    def _int_to_le_bytes(x: int, length: int) -> bytes:
+        out = bytearray(length)
+        for i in range(length):
+            out[i] = (x >> (8 * i)) & 0xFF
+        return bytes(out)
+
+    @classmethod
+    def _poly1305_tag(cls, msg: bytes, one_time_key: bytes) -> bytes:
+        r = cls._le_bytes_to_int(one_time_key[:16])
+        r &= 0x0ffffffc0ffffffc0ffffffc0fffffff
+        s = cls._le_bytes_to_int(one_time_key[16:32])
+        p = (1 << 130) - 5
+        acc = 0
+        i = 0
+        while i < len(msg):
+            block = msg[i:i+16]
+            n = cls._le_bytes_to_int(block + b"\x01")
+            acc = (acc + n) % p
+            acc = (acc * r) % p
+            i += 16
+        tag = (acc + s) % (1 << 128)
+        return cls._int_to_le_bytes(tag, 16)
+
+    @classmethod
+    def _derive_poly_key(cls, key: bytes, nonce: bytes) -> bytes:
+        return cls._chacha20_xor(key, nonce, 0, bytes(32))
 
     @staticmethod
     def _mostly_printable(data: bytes) -> bool:
@@ -240,11 +340,17 @@ class ChatClient:
                         # Ignore - this is our own message echoed back
                         pass
                     else:
-                        # If we are not the board, pick the more readable variant
-                        if self.user_id != USER_ID_BOARD:
-                            dec = self._xor_transform(message)
-                            if self._printable_score(dec) >= self._printable_score(message):
-                                message = dec
+                        # If not board, try to decrypt [nonce|ct|tag]
+                        if self.user_id != USER_ID_BOARD and len(message) >= 28:
+                            nonce = message[:12]
+                            ct = message[12:-16]
+                            tag = message[-16:]
+                            try:
+                                otk = self._derive_poly_key(bytes(KEY), nonce)
+                                if self._poly1305_tag(ct, otk) == tag:
+                                    message = self._chacha20_xor(bytes(KEY), nonce, 1, ct)
+                            except Exception:
+                                pass
 
                         try:
                             msg_str = message.decode('utf-8')
@@ -283,9 +389,13 @@ class ChatClient:
             payload = message
             if isinstance(payload, str):
                 payload = payload.encode('utf-8')
-            # If we are not the board, encrypt before sending
+            # If not board, encrypt: [nonce|ct|tag]
             if self.user_id != USER_ID_BOARD:
-                payload = self._xor_transform(payload)
+                nonce = os.urandom(12)
+                ct = self._chacha20_xor(bytes(KEY), nonce, 1, payload)
+                otk = self._derive_poly_key(bytes(KEY), nonce)
+                tag = self._poly1305_tag(ct, otk)
+                payload = nonce + ct + tag
             frame = ChatProtocol.encode_frame(self.user_id, payload)
             self.sock.sendall(frame)
             print(f"[TX] {message}")
@@ -330,11 +440,25 @@ def main():
     parser.add_argument("port", nargs="?", type=int, default=23, help="Telnet port (default 23)")
     parser.add_argument("--user-id", dest="user_id", type=lambda x: int(x, 0), default=USER_ID_CLIENT,
                         help="User ID in hex or decimal (e.g. 0x02). Use 0x00 to act as 'board' (plaintext in, board encrypts).")
+    parser.add_argument("--key", dest="key", default=None,
+                        help="Optional 32-byte key (64 hex chars or ASCII, truncated/padded)")
     args = parser.parse_args()
 
     host = args.host
     port = args.port
     user_id = args.user_id & 0xFF
+
+    # Optional key override
+    if args.key is not None:
+        try:
+            if len(args.key) == 64 and all(c in '0123456789abcdefABCDEF' for c in args.key):
+                raw = bytes.fromhex(args.key)
+            else:
+                raw = args.key.encode('utf-8')
+            for i in range(32):
+                KEY[i] = raw[i] if i < len(raw) else 0
+        except Exception as e:
+            print(f"[WARN] invalid --key ignored: {e}")
 
     print("=== Protocol Chat Client ===")
     print(f"User ID: 0x{user_id:02X}")

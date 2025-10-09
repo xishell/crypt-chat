@@ -4,22 +4,7 @@
 #include "dtekv-lib.h"
 #include "uart.h"
 
-/* Simple placeholder transform for demo (XOR). */
-static void xor_transform(const unsigned char *in, int len,
-                          unsigned char *out) {
-    for (int i = 0; i < len; i++) out[i] = in[i] ^ 0x5A;
-}
-
-static int mostly_printable(const unsigned char *buf, int len) {
-    if (len <= 0) return 1;
-    int printable = 0;
-    for (int i = 0; i < len; i++) {
-        unsigned char c = buf[i];
-        if ((c >= 0x20 && c <= 0x7E) || c == '\r' || c == '\n' || c == '\t')
-            printable++;
-    }
-    return (printable * 100 / len) >= 80; /* 80% threshold */
-}
+#include "aead.h"
 
 volatile int send_flag = 0;
 
@@ -194,21 +179,30 @@ int main(void) {
                         }
                         print("\n");
 
-                        /* Encrypt plaintext, decrypt ciphertext, then echo that. */
+                        /* Board-actor (0x00) sends plaintext: encrypt; others: decrypt */
                         unsigned char alt[CHAT_MAX_MESSAGE];
-                        int plain_like = mostly_printable(&unstuffed[1], msg_len);
-                        xor_transform(&unstuffed[1], msg_len, alt);
-                        if (plain_like) {
-                            print("[ENC] ");
-                            for (int i = 0; i < msg_len; i++) printc(alt[i]);
-                            print("\n");
+                        int alt_len;
+                        if (user_id == USER_ID_BOARD) {
+                            alt_len = aead_encrypt_pack(&unstuffed[1], msg_len, alt, CHAT_MAX_MESSAGE);
+                            if (alt_len < 0) {
+                                print("[WARN] ENC fail, echoing plaintext\n");
+                                alt_len = msg_len;
+                                for (int i=0;i<msg_len;i++) alt[i] = unstuffed[1+i];
+                            } else {
+                                print("[ENC]\n");
+                            }
                         } else {
-                            print("[DEC] ");
-                            for (int i = 0; i < msg_len; i++) printc(alt[i]);
-                            print("\n");
+                            alt_len = aead_decrypt_unpack(&unstuffed[1], msg_len, alt, CHAT_MAX_MESSAGE);
+                            if (alt_len < 0) {
+                                print("[WARN] DEC fail, echoing as-is\n");
+                                alt_len = msg_len;
+                                for (int i=0;i<msg_len;i++) alt[i] = unstuffed[1+i];
+                            } else {
+                                print("[DEC]\n");
+                            }
                         }
                         /* Echo transformed for others */
-                        send_user_message(&esp_uart, user_id, alt, msg_len);
+                        send_user_message(&esp_uart, user_id, alt, alt_len);
                         led_toggle(0);
                     } else {
                         print("\n[ERROR] CRC mismatch\n");

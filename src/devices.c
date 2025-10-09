@@ -1,6 +1,6 @@
 #include "devices.h"
 
-/* Memory-mapped I/O addresses */
+/* Base addresses */
 #define LED_BASE 0x04000000
 #define SW_BASE 0x04000010
 #define BTN_BASE 0x040000D0
@@ -12,14 +12,14 @@
 #define NUM_DISPLAYS 6
 #define DISP_STRIDE 0x10
 
-/* 7-segment encoding (common cathode) */
+/* 7‑segment encoding */
 static const unsigned char seg_table[16] = {
     0xC0, 0xF9, 0xA4, 0xB0, 0x99,      /* 0-4 */
     0x92, 0x82, 0xF8, 0x80, 0x90,      /* 5-9 */
     0x88, 0x83, 0xC6, 0xA1, 0x86, 0x8E /* A-F */
 };
 
-/* Extended character encoding for display_string */
+/* Extra characters for display_string() */
 static const unsigned char char_table[128] = {
     [' '] = 0xFF, ['-'] = 0xBF, ['_'] = 0xF7,
     ['0'] = 0xC0, ['1'] = 0xF9, ['2'] = 0xA4, ['3'] = 0xB0, ['4'] = 0x99,
@@ -41,7 +41,7 @@ static const unsigned char char_table[128] = {
 static volatile unsigned int *led_ptr = (volatile unsigned int *)LED_BASE;
 static unsigned int led_state = 0;
 
-/* ===== LED Functions ===== */
+/* ===== LEDs ===== */
 
 void led_init(void) {
     led_state = 0;
@@ -76,9 +76,9 @@ void led_toggle(int led_num) {
 
 unsigned int led_get(void) { return led_state; }
 
-/* ===== 7-Segment Display Functions ===== */
+/* ===== 7‑segment ===== */
 
-/* Low-level helper: write raw segment value to display */
+/* Write a raw segment mask to one digit */
 static void display_set_raw(int display_num, unsigned char value) {
     if (display_num < 0 || display_num >= NUM_DISPLAYS)
         return;
@@ -156,7 +156,7 @@ void display_string(const char *str) {
     }
 }
 
-/* ===== Button Functions ===== */
+/* ===== Button ===== */
 
 void button_init(void) {
     /* Buttons are input-only, no initialization needed */
@@ -167,7 +167,7 @@ int button_is_pressed(void) {
     return (*btn_ptr & 0x1) != 0;
 }
 
-/* ===== Switch Functions ===== */
+/* ===== Switches ===== */
 
 void switch_init(void) {
     /* Switches are input-only, no initialization needed */
@@ -184,7 +184,7 @@ int switch_get(int switch_num) {
     return (switch_read() >> switch_num) & 0x1;
 }
 
-/* ===== GPIO Functions ===== */
+/* ===== GPIO ===== */
 
 void gpio_init(void) {
     /* Set all GPIO pins as inputs by default */

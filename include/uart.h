@@ -1,10 +1,7 @@
 #ifndef UART_H
 #define UART_H
 
-/*
- * Software UART Implementation for DTEK-V
- * GPIO-based UART with interrupt-based RX
- */
+/* Bit-banged UART: TX via GPIO, RX via 8x timer ISR. */
 
 /* Standard baud rates */
 #define UART_BAUD_9600 9600
@@ -21,59 +18,64 @@ typedef struct {
 
 /* ===== Basic UART Functions ===== */
 
-/* Initialize UART with specified configuration */
+/* Configure pins and timing */
 void uart_init(uart_config_t *config);
 
-/* Send single character (blocking) */
+/* Send one character (busy-wait) */
 void uart_putc(uart_config_t *config, char c);
 
-/* Send string (blocking) */
+/* Send a string */
 void uart_puts(uart_config_t *config, const char *str);
 
-/* Receive single character (non-blocking, returns -1 if no data) */
+/* Poll for one character (-1 if none) */
 int uart_getc(uart_config_t *config);
 
-/* Clear any pending RX data */
+/* Flush RX */
 void uart_flush_rx(uart_config_t *config);
 
 /* ===== Interrupt-Based UART RX ===== */
 
 #define UART_RX_BUFFER_SIZE 256
 
-/* Initialize timer interrupt for RX sampling */
+/* Init timer for 8x sampling */
 void uart_rx_init_interrupt(uart_config_t *config);
 
-/* Timer ISR - call this from your timer interrupt handler */
+/* Call from timer ISR */
 void uart_rx_isr(void);
 
-/* Check number of bytes available in RX buffer */
+/* RX bytes available */
 int uart_rx_available(void);
 
-/* Get byte from RX buffer (non-blocking, returns -1 if empty) */
+/* Pop one byte (-1 if empty) */
 int uart_rx_getc(void);
 
-/* Print debug statistics (for troubleshooting) */
+/* Debug counters */
 void uart_rx_debug_stats(void);
 
 /* ===== Chat Protocol ===== */
 
 /* Sync pattern for reliable message framing */
 #define CHAT_SYNC_BYTE 0xAA
-#define CHAT_SYNC_COUNT 5
-#define CHAT_MAX_MESSAGE 128
+#define CHAT_ESCAPE_BYTE 0xAB
+#define CHAT_MAX_MESSAGE 127
+#define CHAT_MAX_FRAME 256
 
-/* Send message with sync preamble for reliable delivery */
-void chat_send_message(uart_config_t *uart, const char *message);
+/* User IDs */
+#define USER_ID_BOARD 0x01
+#define USER_ID_CLIENT 0x02
 
-/* Receive message (waits for sync pattern, returns message length) */
-int chat_receive_message(uart_config_t *uart, char *message, int max_len, unsigned int timeout_ms);
+/* Protocol helpers moved to chat_protocol.h */
 
-/* ===== Timing Helpers ===== */
+/* ===== Delays (busy-wait) ===== */
 
-/* Microsecond delay using hardware timer */
+/* Microsecond delay via timer */
 void delay_us(unsigned int us);
 
 /* Millisecond delay */
 void delay_ms(unsigned int ms);
+
+/* ===== Accurate TX (timer) ===== */
+void uart_tx_char(uart_config_t *config, char c);
+void uart_tx_bytes(uart_config_t *config, const unsigned char *data, int len);
 
 #endif /* UART_H */

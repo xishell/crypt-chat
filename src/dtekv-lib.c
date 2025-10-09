@@ -1,15 +1,15 @@
 #include "dtekv-lib.h"
 #include "devices.h"
 
-/* ===== ISR Function Pointers ===== */
+/* ===== ISR function pointers ===== */
 
 void (*timer_isr)(void) = 0;
 void (*switch_isr)(unsigned int) = 0;
 void (*button_isr)(unsigned int) = 0;
 
-/* ===== JTAG UART I/O Functions ===== */
+/* ===== JTAG UART ===== */
 
-/* Print a single character to JTAG UART */
+/* Print one character to the JTAG UART */
 void printc(char c) {
     while (((*JTAG_UART_CTRL) & JTAG_UART_WSPACE_MASK) == 0)
         ;
@@ -26,7 +26,7 @@ void print(char *s) {
     }
 }
 
-/* Read a single character from JTAG UART (non-blocking) */
+/* Non-blocking read of one character (0 if nothing there) */
 char readc(void) {
     unsigned int data = *JTAG_UART_DATA;
     if (data & JTAG_UART_RVALID_MASK) {
@@ -35,12 +35,12 @@ char readc(void) {
     return 0; /* No data available */
 }
 
-/* Check if data is available to read */
+/* Is a character available to read? */
 int read_available(void) {
     return (*JTAG_UART_DATA & JTAG_UART_RVALID_MASK) != 0;
 }
 
-/* ===== Number Formatting Functions ===== */
+/* ===== Number formatting ===== */
 
 /* Print a signed decimal integer */
 void print_dec(int x) {
@@ -71,12 +71,12 @@ void print_udec(unsigned int x) {
     }
 }
 
-/* Print a 32-bit hexadecimal value (8 digits) */
+/* Print a 32-bit hexadecimal value */
 void print_hex32(unsigned int x) {
     print_hex(x, 8);
 }
 
-/* Print a hexadecimal value with specified number of digits */
+/* Print a hexadecimal value with a fixed width */
 void print_hex(unsigned int x, int digits) {
     printc('0');
     printc('x');
@@ -90,7 +90,7 @@ void print_hex(unsigned int x, int digits) {
     }
 }
 
-/* Print a binary value with specified number of bits */
+/* Print a binary value with a fixed width */
 void print_bin(unsigned int x, int bits) {
     printc('0');
     printc('b');
@@ -99,7 +99,7 @@ void print_bin(unsigned int x, int bits) {
     }
 }
 
-/* ===== Exception Handler ===== */
+/* ===== Exception handler ===== */
 
 void handle_exception(unsigned arg0, unsigned arg1, unsigned arg2,
                       unsigned arg3, unsigned arg4, unsigned arg5,
@@ -132,7 +132,7 @@ void handle_exception(unsigned arg0, unsigned arg1, unsigned arg2,
         ; /* Halt on exception */
 }
 
-/* ===== Interrupt Handler ===== */
+/* ===== Interrupt handler ===== */
 
 void handle_interrupt(unsigned cause) {
     switch (cause) {

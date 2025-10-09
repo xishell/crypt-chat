@@ -1,12 +1,9 @@
 #ifndef DEVICES_H
 #define DEVICES_H
 
-/*
- * DTEK-V Device Drivers
- * High-level hardware abstraction layer
- */
+/* DTEK‑V board glue: LEDs, switches, button, 7‑seg, GPIO. */
 
-/* ===== Hardware Register Definitions ===== */
+/* ===== Registers ===== */
 
 /* Memory-mapped I/O base addresses */
 #define TIMER_BASE 0x04000020
@@ -38,17 +35,17 @@
 #define JTAG_UART_DATA ((volatile unsigned int *)(JTAG_UART_BASE + 0x00))
 #define JTAG_UART_CTRL ((volatile unsigned int *)(JTAG_UART_BASE + 0x04))
 
-/* JTAG UART control register bits */
+/* JTAG UART control bits */
 #define JTAG_UART_WSPACE_MASK 0xFFFF0000 /* Write space available */
 #define JTAG_UART_RVALID_MASK 0x00008000 /* Read valid bit */
 #define JTAG_UART_DATA_MASK 0x000000FF   /* Data byte mask */
 
-/* Interrupt source definitions */
+/* Interrupt sources */
 #define IRQ_TIMER 16
 #define IRQ_SWITCHES 17
 #define IRQ_BUTTON 18
 
-/* ===== High-Level Device Drivers ===== */
+/* ===== API ===== */
 
 /* LED Functions */
 void led_init(void);
@@ -58,7 +55,7 @@ void led_off(int led_num);
 void led_toggle(int led_num);
 unsigned int led_get(void);
 
-/* 7-Segment Display Functions */
+/* 7‑segment display */
 void display_init(void);
 void display_clear(int display_num);
 void display_clear_all(void);
@@ -67,16 +64,16 @@ void display_decimal(unsigned int number);  /* Display as decimal */
 void display_digit(int display_num, unsigned char digit); /* Show 0-F on one display */
 void display_string(const char *str);       /* Display up to 6 characters */
 
-/* Button Functions */
+/* Push button */
 void button_init(void);
 int button_is_pressed(void);
 
-/* Switch Functions */
+/* Slide switches */
 void switch_init(void);
 unsigned int switch_read(void);
 int switch_get(int switch_num);
 
-/* GPIO Functions */
+/* 2×20 GPIO block */
 #define GPIO_PIN_COUNT 40
 
 void gpio_init(void);

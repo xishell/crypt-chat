@@ -5,9 +5,9 @@
 #define TIMER_BASE  0x04000020
 #define SW_BASE     0x04000010
 
-/* ===== Printf Implementation ===== */
+/* ===== printf (small) ===== */
 
-/* Simple variable argument list handling */
+/* Simple varargs */
 typedef char *va_list;
 #define va_start(ap, last) ((ap) = (char *)&(last) + sizeof(last))
 #define va_arg(ap, type) (*(type *)((ap) += sizeof(type), (ap) - sizeof(type)))
@@ -71,7 +71,7 @@ void printf(const char *format, ...) {
     va_end(args);
 }
 
-/* ===== Memory Dump Utilities ===== */
+/* ===== Memory dumps ===== */
 
 void mem_dump(unsigned int address, unsigned int length) {
     volatile unsigned char *ptr = (volatile unsigned char *)address;
@@ -114,7 +114,7 @@ unsigned int mem_read(unsigned int address) {
     return value;
 }
 
-/* ===== Register Inspection ===== */
+/* ===== Register snapshots ===== */
 
 void reg_dump_csr(void) {
     unsigned int mstatus, mie, mip, mcause, mepc, mcycle, minstret;
@@ -174,7 +174,7 @@ void reg_dump_all(void) {
     printf("\n");
 }
 
-/* ===== String Formatting Helpers ===== */
+/* ===== itoa/utoa ===== */
 
 void itoa(int value, char *str, int base) {
     char *ptr = str;
@@ -231,7 +231,7 @@ void utoa(unsigned int value, char *str, int base) {
     }
 }
 
-/* ===== Timing Utilities ===== */
+/* ===== Timing ===== */
 
 unsigned int get_cycles(void) {
     unsigned int cycles;
@@ -249,7 +249,7 @@ void sleep_ms(unsigned int ms) {
     while (get_time_ms() < target);
 }
 
-/* ===== String Utilities ===== */
+/* ===== Strings ===== */
 
 /* String length */
 int strlen(const char *s) {

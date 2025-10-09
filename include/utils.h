@@ -1,43 +1,40 @@
 #ifndef UTILS_H
 #define UTILS_H
 
-/*
- * DTEK-V Utility Functions
- * Debug and diagnostic tools
- */
+/* Small printf, dumps, tiny string helpers, simple timing. */
 
-/* Printf-style formatted output */
+/* Minimal printf-style output to JTAG UART */
 void printf(const char *format, ...);
 
-/* Memory dump utilities */
+/* Quick and dirty memory dump helpers */
 void mem_dump(unsigned int address, unsigned int length);
 void mem_dump_words(unsigned int address, unsigned int num_words);
 void mem_write(unsigned int address, unsigned int value);
 unsigned int mem_read(unsigned int address);
 
-/* Register inspection */
+/* A couple of register dumps handy during bring-up */
 void reg_dump_csr(void);
 void reg_dump_timer(void);
 void reg_dump_switches(void);
 void reg_dump_all(void);
 
-/* String utilities */
+/* Tiny string helpers (non-standard, just what's needed) */
 int strlen(const char *s);
 int strcmp(const char *s1, const char *s2);
 void strcpy(char *dest, const char *src);
 void strcat(char *dest, const char *src);
 
-/* String formatting helpers */
+/* Integer to string helpers */
 int snprintf(char *buf, int size, const char *format, ...);
 void itoa(int value, char *str, int base);
 void utoa(unsigned int value, char *str, int base);
 
-/* Timing utilities */
+/* Coarse timing */
 unsigned int get_cycles(void);
 unsigned int get_time_ms(void);
 void sleep_ms(unsigned int ms);
 
-/* Assert macro for debugging */
+/* Assert for quick checks during development */
 #ifdef DEBUG
 #define ASSERT(cond) \
     do { \

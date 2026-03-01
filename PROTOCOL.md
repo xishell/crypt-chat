@@ -1,46 +1,57 @@
 # Protocol
 
-## Frame
+## Frame Format
 
 ```
-[0xAA][0xAA] [LEN] [STUFFED_DATA]
+Wire:       [0xAA] [0xAA] [LEN] [STUFFED_DATA]
 
-After unstuffing:
-  [USER_ID] [MESSAGE...] [CRC_HI] [CRC_LO]
-
-CRC16-CCITT over: [USER_ID] + [MESSAGE]
+Unstuffed:  [USER_ID] [MESSAGE...] [CRC_HI] [CRC_LO]
 ```
 
-## Stuffing
+- `LEN` — length of stuffed data (1-256)
+- `CRC16-CCITT` — polynomial `0x1021`, initial `0xFFFF`, computed over `USER_ID + MESSAGE`
 
-- Escape with 0xAB:
-  - 0xAA → 0xAB 0x00
-  - 0xAB → 0xAB 0x01
+## Byte Stuffing
 
-## RX flow
+Escape byte `0xAB` is used to avoid sync byte collisions in the payload:
 
-- SYNC1 → SYNC2 → LENGTH → DATA → CRC check.
-- Timeout: drop partial frame (~1s).
+| Raw byte | Encoded as  |
+| -------- | ----------- |
+| `0xAA`   | `0xAB 0x00` |
+| `0xAB`   | `0xAB 0x01` |
 
-## TX flow
+## Encryption
 
-1. [USER_ID][MESSAGE]
-2. CRC16
-3. Stuff
-4. Send header + data
-
-## Notes
-
-- Client filters its own `USER_ID` to avoid echo.
-  │ │
-  ├─ CRC OK: Deliver msg │
-  │ │
-  └─ CRC fail ────────────┘
+Message payloads are encrypted with ChaCha20-Poly1305 AEAD (RFC 8439):
 
 ```
-
-## Next Steps
-
-1. **Add real encryption** - Replace `pseudo_encrypt/decrypt` with real implementation
-
+MESSAGE = [NONCE (12 bytes)] [CIPHERTEXT (n bytes)] [TAG (16 bytes)]
 ```
+
+- Nonce is generated per message (counter-based on board, random on client)
+- Tag authenticates the ciphertext; messages with invalid tags are dropped
+
+## RX Flow
+
+1. Detect two consecutive `0xAA` sync bytes
+2. Read length byte
+3. Collect `LEN` bytes of stuffed data
+4. Unstuff, verify CRC, deliver message
+5. Timeout: drop partial frame after ~1 second of inactivity
+
+## TX Flow
+
+1. Prepend `USER_ID` to message
+2. Compute CRC16 over `USER_ID + MESSAGE`
+3. Append CRC (big-endian)
+4. Byte-stuff the result
+5. Send `[0xAA] [0xAA] [LEN] [STUFFED_DATA]`
+
+## User IDs
+
+| ID     | Role   |
+| ------ | ------ |
+| `0x00` | Board  |
+| `0x02` | Client |
+
+The client filters frames containing its own user ID to suppress echo.

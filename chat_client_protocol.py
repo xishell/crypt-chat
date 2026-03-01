@@ -37,6 +37,112 @@ KEY = bytearray([
     0x78,0x79,0x7A,0x7B, 0x7C,0x7D,0x7E,0x7F,
 ])
 
+
+# ---- ChaCha20-Poly1305 (standalone helpers) ----
+
+def _rotl32(x, n):
+    return ((x << n) & 0xFFFFFFFF) | ((x & 0xFFFFFFFF) >> (32 - n))
+
+def _load32_le(b):
+    return b[0] | (b[1] << 8) | (b[2] << 16) | (b[3] << 24)
+
+def _store32_le(w):
+    return bytes([w & 0xFF, (w >> 8) & 0xFF, (w >> 16) & 0xFF, (w >> 24) & 0xFF])
+
+def _quarter_round(a, b, c, d):
+    a = (a + b) & 0xFFFFFFFF; d ^= a; d = _rotl32(d, 16)
+    c = (c + d) & 0xFFFFFFFF; b ^= c; b = _rotl32(b, 12)
+    a = (a + b) & 0xFFFFFFFF; d ^= a; d = _rotl32(d, 8)
+    c = (c + d) & 0xFFFFFFFF; b ^= c; b = _rotl32(b, 7)
+    return a, b, c, d
+
+def _chacha_block(state):
+    s = state[:]
+    for _ in range(10):
+        s[0], s[4], s[8], s[12] = _quarter_round(s[0], s[4], s[8], s[12])
+        s[1], s[5], s[9], s[13] = _quarter_round(s[1], s[5], s[9], s[13])
+        s[2], s[6], s[10], s[14] = _quarter_round(s[2], s[6], s[10], s[14])
+        s[3], s[7], s[11], s[15] = _quarter_round(s[3], s[7], s[11], s[15])
+        s[0], s[5], s[10], s[15] = _quarter_round(s[0], s[5], s[10], s[15])
+        s[1], s[6], s[11], s[12] = _quarter_round(s[1], s[6], s[11], s[12])
+        s[2], s[7], s[8], s[13] = _quarter_round(s[2], s[7], s[8], s[13])
+        s[3], s[4], s[9], s[14] = _quarter_round(s[3], s[4], s[9], s[14])
+    for i in range(16):
+        s[i] = (s[i] + state[i]) & 0xFFFFFFFF
+    return b"".join(_store32_le(w) for w in s)
+
+def chacha20_xor(key: bytes, nonce: bytes, counter: int, data: bytes) -> bytes:
+    out = bytearray(len(data))
+    pos = 0
+    while pos < len(data):
+        state = [
+            0x61707865, 0x3320646E, 0x79622D32, 0x6B206574,
+        ] + [_load32_le(key[i:i+4]) for i in range(0, 32, 4)] + [
+            counter & 0xFFFFFFFF,
+            _load32_le(nonce[0:4]),
+            _load32_le(nonce[4:8]),
+            _load32_le(nonce[8:12]),
+        ]
+        block = _chacha_block(state)
+        take = min(64, len(data) - pos)
+        for i in range(take):
+            out[pos + i] = data[pos + i] ^ block[i]
+        counter = (counter + 1) & 0xFFFFFFFF
+        pos += take
+    return bytes(out)
+
+def _le_bytes_to_int(b: bytes) -> int:
+    v = 0
+    for i in range(len(b)):
+        v |= b[i] << (8 * i)
+    return v
+
+def _int_to_le_bytes(x: int, length: int) -> bytes:
+    out = bytearray(length)
+    for i in range(length):
+        out[i] = (x >> (8 * i)) & 0xFF
+    return bytes(out)
+
+def poly1305_tag(msg: bytes, one_time_key: bytes) -> bytes:
+    r = _le_bytes_to_int(one_time_key[:16])
+    r &= 0x0ffffffc0ffffffc0ffffffc0fffffff
+    s = _le_bytes_to_int(one_time_key[16:32])
+    p = (1 << 130) - 5
+    acc = 0
+    i = 0
+    while i < len(msg):
+        block = msg[i:i+16]
+        n = _le_bytes_to_int(block + b"\x01")
+        acc = (acc + n) % p
+        acc = (acc * r) % p
+        i += 16
+    tag = (acc + s) % (1 << 128)
+    return _int_to_le_bytes(tag, 16)
+
+def derive_poly_key(key: bytes, nonce: bytes) -> bytes:
+    return chacha20_xor(key, nonce, 0, bytes(32))
+
+def aead_encrypt(key: bytes, plaintext: bytes) -> bytes:
+    """Encrypt and return nonce(12) + ciphertext + tag(16)."""
+    nonce = os.urandom(12)
+    ct = chacha20_xor(key, nonce, 1, plaintext)
+    otk = derive_poly_key(key, nonce)
+    tag = poly1305_tag(ct, otk)
+    return nonce + ct + tag
+
+def aead_decrypt(key: bytes, packed: bytes) -> bytes | None:
+    """Decrypt nonce(12) + ciphertext + tag(16). Returns None on auth failure."""
+    if len(packed) < 28:
+        return None
+    nonce = packed[:12]
+    ct = packed[12:-16]
+    tag = packed[-16:]
+    otk = derive_poly_key(key, nonce)
+    if poly1305_tag(ct, otk) != tag:
+        return None
+    return chacha20_xor(key, nonce, 1, ct)
+
+
 class RxState(Enum):
     PLAINTEXT = 0
     SYNC1 = 1
@@ -137,7 +243,6 @@ class ChatProtocol:
 
         # Extract message and CRC (CRC is over [USER_ID] [MESSAGE])
         msg_with_id_len = len(unstuffed) - 2
-        msg_len = msg_with_id_len - 1  # Exclude USER_ID
         message = unstuffed[1:msg_with_id_len]  # Message starts at index 1
         received_crc = (unstuffed[msg_with_id_len] << 8) | unstuffed[msg_with_id_len + 1]
 
@@ -155,128 +260,20 @@ class ChatClient:
         self.host = host
         self.port = port
         self.sock = None
-        self.running = False
         self.user_id = user_id
+        self.stop_event = threading.Event()
 
         # Protocol state machine
         self.rx_state = RxState.PLAINTEXT
         self.rx_frame_buffer = bytearray()
         self.rx_expected_length = 0
 
-    @staticmethod
-    # ---- ChaCha20 (minimal) ----
-    @staticmethod
-    def _rotl32(x, n):
-        return ((x << n) & 0xFFFFFFFF) | ((x & 0xFFFFFFFF) >> (32 - n))
+    @property
+    def running(self):
+        return not self.stop_event.is_set()
 
-    @staticmethod
-    def _load32_le(b):
-        return b[0] | (b[1] << 8) | (b[2] << 16) | (b[3] << 24)
-
-    @staticmethod
-    def _store32_le(w):
-        return bytes([w & 0xFF, (w >> 8) & 0xFF, (w >> 16) & 0xFF, (w >> 24) & 0xFF])
-
-    @classmethod
-    def _quarter_round(cls, a, b, c, d):
-        a = (a + b) & 0xFFFFFFFF; d ^= a; d = cls._rotl32(d, 16)
-        c = (c + d) & 0xFFFFFFFF; b ^= c; b = cls._rotl32(b, 12)
-        a = (a + b) & 0xFFFFFFFF; d ^= a; d = cls._rotl32(d, 8)
-        c = (c + d) & 0xFFFFFFFF; b ^= c; b = cls._rotl32(b, 7)
-        return a, b, c, d
-
-    @classmethod
-    def _chacha_block(cls, state):
-        s = state[:]
-        for _ in range(10):
-            s[0], s[4], s[8], s[12] = cls._quarter_round(s[0], s[4], s[8], s[12])
-            s[1], s[5], s[9], s[13] = cls._quarter_round(s[1], s[5], s[9], s[13])
-            s[2], s[6], s[10], s[14] = cls._quarter_round(s[2], s[6], s[10], s[14])
-            s[3], s[7], s[11], s[15] = cls._quarter_round(s[3], s[7], s[11], s[15])
-            s[0], s[5], s[10], s[15] = cls._quarter_round(s[0], s[5], s[10], s[15])
-            s[1], s[6], s[11], s[12] = cls._quarter_round(s[1], s[6], s[11], s[12])
-            s[2], s[7], s[8], s[13] = cls._quarter_round(s[2], s[7], s[8], s[13])
-            s[3], s[4], s[9], s[14] = cls._quarter_round(s[3], s[4], s[9], s[14])
-        for i in range(16):
-            s[i] = (s[i] + state[i]) & 0xFFFFFFFF
-        return b"".join(cls._store32_le(w) for w in s)
-
-    @classmethod
-    def _chacha20_xor(cls, key: bytes, nonce: bytes, counter: int, data: bytes) -> bytes:
-        out = bytearray(len(data))
-        pos = 0
-        while pos < len(data):
-            state = [
-                0x61707865, 0x3320646E, 0x79622D32, 0x6B206574,
-            ] + [cls._load32_le(key[i:i+4]) for i in range(0, 32, 4)] + [
-                counter & 0xFFFFFFFF,
-                cls._load32_le(nonce[0:4]),
-                cls._load32_le(nonce[4:8]),
-                cls._load32_le(nonce[8:12]),
-            ]
-            block = cls._chacha_block(state)
-            take = min(64, len(data) - pos)
-            for i in range(take):
-                out[pos + i] = data[pos + i] ^ block[i]
-            counter = (counter + 1) & 0xFFFFFFFF
-            pos += take
-        return bytes(out)
-
-    # ---- Poly1305 (minimal) ----
-    @staticmethod
-    def _le_bytes_to_int(b: bytes) -> int:
-        v = 0
-        for i in range(len(b)):
-            v |= b[i] << (8 * i)
-        return v
-
-    @staticmethod
-    def _int_to_le_bytes(x: int, length: int) -> bytes:
-        out = bytearray(length)
-        for i in range(length):
-            out[i] = (x >> (8 * i)) & 0xFF
-        return bytes(out)
-
-    @classmethod
-    def _poly1305_tag(cls, msg: bytes, one_time_key: bytes) -> bytes:
-        r = cls._le_bytes_to_int(one_time_key[:16])
-        r &= 0x0ffffffc0ffffffc0ffffffc0fffffff
-        s = cls._le_bytes_to_int(one_time_key[16:32])
-        p = (1 << 130) - 5
-        acc = 0
-        i = 0
-        while i < len(msg):
-            block = msg[i:i+16]
-            n = cls._le_bytes_to_int(block + b"\x01")
-            acc = (acc + n) % p
-            acc = (acc * r) % p
-            i += 16
-        tag = (acc + s) % (1 << 128)
-        return cls._int_to_le_bytes(tag, 16)
-
-    @classmethod
-    def _derive_poly_key(cls, key: bytes, nonce: bytes) -> bytes:
-        return cls._chacha20_xor(key, nonce, 0, bytes(32))
-
-    @staticmethod
-    def _mostly_printable(data: bytes) -> bool:
-        if not data:
-            return True
-        printable = 0
-        for b in data:
-            if (0x20 <= b <= 0x7E) or b in (0x0D, 0x0A, 0x09):
-                printable += 1
-        return (printable * 100 // len(data)) >= 80
-
-    @staticmethod
-    def _printable_score(data: bytes) -> int:
-        if not data:
-            return 100
-        printable = 0
-        for b in data:
-            if (0x20 <= b <= 0x7E) or b in (0x0D, 0x0A, 0x09):
-                printable += 1
-        return (printable * 100) // len(data)
+    def stop(self):
+        self.stop_event.set()
 
     def connect(self):
         """Connect to ESP8266 telnet server"""
@@ -287,11 +284,19 @@ class ChatClient:
             print("[Type messages to send (will be encrypted)]")
             print("[Messages from board will be decrypted and displayed]")
             print("[Press Ctrl+C to quit]\n")
-            self.running = True
             return True
         except Exception as e:
             print(f"[ERROR] Could not connect: {e}")
             return False
+
+    def _try_decrypt(self, message):
+        """Attempt AEAD decryption on a received message. Returns plaintext or original."""
+        if self.user_id == USER_ID_BOARD or len(message) < 28:
+            return message
+        result = aead_decrypt(bytes(KEY), message)
+        if result is not None:
+            return result
+        return message
 
     def process_rx_byte(self, byte):
         """Process received byte with state machine"""
@@ -299,66 +304,43 @@ class ChatClient:
             if byte == CHAT_SYNC_BYTE:
                 self.rx_state = RxState.SYNC1
             else:
-                # Plaintext byte - just print it
                 try:
                     print(chr(byte), end='', flush=True)
-                except:
+                except ValueError:
                     pass
 
         elif self.rx_state == RxState.SYNC1:
             if byte == CHAT_SYNC_BYTE:
                 self.rx_state = RxState.SYNC2
             else:
-                # False alarm
                 self.rx_state = RxState.PLAINTEXT
                 try:
                     print(chr(byte), end='', flush=True)
-                except:
+                except ValueError:
                     pass
 
         elif self.rx_state == RxState.SYNC2:
-            # This should be length byte
-            if byte > 0 and byte <= CHAT_MAX_FRAME:
+            if 0 < byte <= CHAT_MAX_FRAME:
                 self.rx_expected_length = byte
                 self.rx_frame_buffer = bytearray()
                 self.rx_state = RxState.DATA
             else:
-                # Invalid length
                 self.rx_state = RxState.PLAINTEXT
 
         elif self.rx_state == RxState.DATA:
-            # Collecting frame data
             self.rx_frame_buffer.append(byte)
 
             if len(self.rx_frame_buffer) >= self.rx_expected_length:
-                # Complete frame received - process it
                 user_id, message = ChatProtocol.decode_frame(bytes(self.rx_frame_buffer))
 
-                if message is not None:
-                    # Filter out our own messages (echo from board)
-                    if user_id == self.user_id:
-                        # Ignore - this is our own message echoed back
-                        pass
-                    else:
-                        # If not board, try to decrypt [nonce|ct|tag]
-                        if self.user_id != USER_ID_BOARD and len(message) >= 28:
-                            nonce = message[:12]
-                            ct = message[12:-16]
-                            tag = message[-16:]
-                            try:
-                                otk = self._derive_poly_key(bytes(KEY), nonce)
-                                if self._poly1305_tag(ct, otk) == tag:
-                                    message = self._chacha20_xor(bytes(KEY), nonce, 1, ct)
-                            except Exception:
-                                pass
+                if message is not None and user_id != self.user_id:
+                    message = self._try_decrypt(message)
+                    try:
+                        msg_str = message.decode('utf-8')
+                        print(f"\n[RX from user 0x{user_id:02X}] {msg_str}")
+                    except UnicodeDecodeError:
+                        print(f"\n[RX from user 0x{user_id:02X}] <binary: {len(message)} bytes>")
 
-                        try:
-                            msg_str = message.decode('utf-8')
-                            print(f"\n[RX from user 0x{user_id:02X}] {msg_str}")
-                        except:
-                            print(f"\n[RX from user 0x{user_id:02X}] <binary: {len(message)} bytes>")
-
-                # Reset to plaintext mode
                 self.rx_state = RxState.PLAINTEXT
                 self.rx_frame_buffer = bytearray()
 
@@ -371,10 +353,9 @@ class ChatClient:
                     data = self.sock.recv(1024)
                     if not data:
                         print("\n[Connection closed by server]")
-                        self.running = False
+                        self.stop()
                         break
 
-                    # Process each byte through state machine
                     for byte in data:
                         self.process_rx_byte(byte)
 
@@ -386,33 +367,24 @@ class ChatClient:
     def send_message(self, message):
         """Encode and send message using protocol"""
         try:
-            payload = message
-            if isinstance(payload, str):
-                payload = payload.encode('utf-8')
-            # If not board, encrypt: [nonce|ct|tag]
+            payload = message.encode('utf-8') if isinstance(message, str) else message
             if self.user_id != USER_ID_BOARD:
-                nonce = os.urandom(12)
-                ct = self._chacha20_xor(bytes(KEY), nonce, 1, payload)
-                otk = self._derive_poly_key(bytes(KEY), nonce)
-                tag = self._poly1305_tag(ct, otk)
-                payload = nonce + ct + tag
+                payload = aead_encrypt(bytes(KEY), payload)
             frame = ChatProtocol.encode_frame(self.user_id, payload)
             self.sock.sendall(frame)
             print(f"[TX] {message}")
         except Exception as e:
             print(f"[ERROR sending]: {e}")
-            self.running = False
+            self.stop()
 
     def run(self):
         """Main client loop"""
         if not self.connect():
             return
 
-        # Start receive thread
         recv_thread = threading.Thread(target=self.receive_thread, daemon=True)
         recv_thread.start()
 
-        # Main input loop
         try:
             while self.running:
                 try:
@@ -429,7 +401,7 @@ class ChatClient:
         except KeyboardInterrupt:
             print("\n[Disconnecting...]")
         finally:
-            self.running = False
+            self.stop()
             if self.sock:
                 self.sock.close()
             print("[Disconnected]")

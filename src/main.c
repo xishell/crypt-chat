@@ -133,6 +133,69 @@ void send_message(uart_config_t *uart) {
     led_toggle(0);
 }
 
+static int transform_message(unsigned char user_id,
+                              const unsigned char *msg, int msg_len,
+                              unsigned char *out, int out_size) {
+    int alt_len;
+    if (user_id == USER_ID_BOARD) {
+        alt_len = aead_encrypt_pack(msg, msg_len, out, out_size);
+        if (alt_len < 0) {
+            print("[WARN] ENC fail, echoing plaintext\n");
+            for (int i = 0; i < msg_len; i++) out[i] = msg[i];
+            return msg_len;
+        }
+        print("[ENC]\n");
+    } else {
+        alt_len = aead_decrypt_unpack(msg, msg_len, out, out_size);
+        if (alt_len < 0) {
+            print("[WARN] DEC fail, echoing as-is\n");
+            for (int i = 0; i < msg_len; i++) out[i] = msg[i];
+            return msg_len;
+        }
+        print("[DEC]\n");
+    }
+    return alt_len;
+}
+
+static void process_frame(uart_config_t *uart) {
+    unsigned char stuffed[CHAT_MAX_FRAME];
+    int stuffed_len = chat_framer_take(&framer, stuffed, CHAT_MAX_FRAME);
+
+    unsigned char unstuffed[CHAT_MAX_FRAME];
+    int unstuffed_len = byte_unstuff(stuffed, stuffed_len, unstuffed, CHAT_MAX_FRAME);
+
+    if (unstuffed_len < 4) {
+        print("\n[ERROR] Invalid frame\n");
+        return;
+    }
+
+    unsigned char user_id = unstuffed[0];
+    int msg_with_id_len = unstuffed_len - 2;
+    int msg_len = msg_with_id_len - 1;
+
+    unsigned short rx_crc = ((unsigned short)unstuffed[msg_with_id_len] << 8) |
+                             unstuffed[msg_with_id_len + 1];
+    unsigned short calc_crc = crc16_ccitt(unstuffed, msg_with_id_len);
+
+    if (rx_crc != calc_crc) {
+        print("\n[ERROR] CRC mismatch\n");
+        return;
+    }
+
+    print("\n[RX from user ");
+    print_hex(user_id, 2);
+    print("] ");
+    for (int i = 1; i <= msg_len; i++)
+        printc(unstuffed[i]);
+    print("\n");
+
+    unsigned char alt[CHAT_MAX_MESSAGE];
+    int alt_len = transform_message(user_id, &unstuffed[1], msg_len, alt, CHAT_MAX_MESSAGE);
+
+    send_user_message(uart, user_id, alt, alt_len);
+    led_toggle(0);
+}
+
 int main(void) {
     uart_config_t esp_uart;
 
@@ -154,63 +217,8 @@ int main(void) {
             total_bytes_received++;
             chat_framer_result_t r =
                 chat_framer_feed(&framer, (unsigned char)c);
-            if (r == CHAT_FRAMER_FRAME_READY) {
-                unsigned char stuffed[CHAT_MAX_FRAME];
-                int stuffed_len =
-                    chat_framer_take(&framer, stuffed, CHAT_MAX_FRAME);
-                unsigned char unstuffed[CHAT_MAX_FRAME];
-                int unstuffed_len = byte_unstuff(stuffed, stuffed_len,
-                                                 unstuffed, CHAT_MAX_FRAME);
-                if (unstuffed_len >= 4) { /* USER_ID + data + CRC */
-                    unsigned char user_id = unstuffed[0];
-                    int msg_with_id_len = unstuffed_len - 2;
-                    int msg_len = msg_with_id_len - 1;
-                    unsigned short rx_crc =
-                        ((unsigned short)unstuffed[msg_with_id_len] << 8) |
-                        unstuffed[msg_with_id_len + 1];
-                    unsigned short calc_crc =
-                        crc16_ccitt(unstuffed, msg_with_id_len);
-                    if (rx_crc == calc_crc) {
-                        print("\n[RX from user ");
-                        print_hex(user_id, 2);
-                        print("] ");
-                        for (int i = 1; i <= msg_len; i++) {
-                            printc(unstuffed[i]);
-                        }
-                        print("\n");
-
-                        /* Board-actor (0x00) sends plaintext: encrypt; others: decrypt */
-                        unsigned char alt[CHAT_MAX_MESSAGE];
-                        int alt_len;
-                        if (user_id == USER_ID_BOARD) {
-                            alt_len = aead_encrypt_pack(&unstuffed[1], msg_len, alt, CHAT_MAX_MESSAGE);
-                            if (alt_len < 0) {
-                                print("[WARN] ENC fail, echoing plaintext\n");
-                                alt_len = msg_len;
-                                for (int i=0;i<msg_len;i++) alt[i] = unstuffed[1+i];
-                            } else {
-                                print("[ENC]\n");
-                            }
-                        } else {
-                            alt_len = aead_decrypt_unpack(&unstuffed[1], msg_len, alt, CHAT_MAX_MESSAGE);
-                            if (alt_len < 0) {
-                                print("[WARN] DEC fail, echoing as-is\n");
-                                alt_len = msg_len;
-                                for (int i=0;i<msg_len;i++) alt[i] = unstuffed[1+i];
-                            } else {
-                                print("[DEC]\n");
-                            }
-                        }
-                        /* Echo transformed for others */
-                        send_user_message(&esp_uart, user_id, alt, alt_len);
-                        led_toggle(0);
-                    } else {
-                        print("\n[ERROR] CRC mismatch\n");
-                    }
-                } else {
-                    print("\n[ERROR] Invalid frame\n");
-                }
-            }
+            if (r == CHAT_FRAMER_FRAME_READY)
+                process_frame(&esp_uart);
         }
 
         /* Check if send button pressed */

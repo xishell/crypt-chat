@@ -1,7 +1,11 @@
 #ifndef CRYPTO_KEY_H
 #define CRYPTO_KEY_H
 
-/* 32-byte demo key shared across the project (change for a new demo). */
+/*
+ * WARNING: Demo/lab key only. This key is compiled into the firmware
+ * and visible to anyone with access to the binary. Do NOT use for
+ * production or real security applications.
+ */
 #define CRYPTO_KEY_LEN 32
 static const unsigned char CRYPTO_KEY[CRYPTO_KEY_LEN] = {
     0x60,0x61,0x62,0x63, 0x64,0x65,0x66,0x67,

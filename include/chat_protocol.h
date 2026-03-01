@@ -1,9 +1,15 @@
 #ifndef CHAT_PROTOCOL_H
 #define CHAT_PROTOCOL_H
 
-#include "uart.h"
+/* Protocol constants */
+#define CHAT_SYNC_BYTE   0xAA
+#define CHAT_ESCAPE_BYTE 0xAB
+#define CHAT_MAX_MESSAGE 127
+#define CHAT_MAX_FRAME   256
 
-/* Chat protocol helpers (CRC16 + byte stuffing). */
+/* User IDs */
+#define USER_ID_BOARD  0x00
+#define USER_ID_CLIENT 0x02
 
 /* CRC16-CCITT (poly 0x1021, init 0xFFFF) */
 unsigned short crc16_ccitt(const unsigned char *data, int len);

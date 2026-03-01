@@ -1,7 +1,7 @@
 #ifndef CHAT_FRAMER_H
 #define CHAT_FRAMER_H
 
-#include "uart.h"
+#include "chat_protocol.h"
 
 typedef enum {
     CHAT_FRAMER_STATE_PLAINTEXT = 0,

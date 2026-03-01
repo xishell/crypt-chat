@@ -5,6 +5,7 @@
 #include "uart.h"
 
 #include "aead.h"
+#include "crypto_key.h"
 
 volatile int send_flag = 0;
 
@@ -134,14 +135,14 @@ static int transform_message(unsigned char user_id,
                               unsigned char *out, int out_size) {
     int alt_len;
     if (user_id == USER_ID_BOARD) {
-        alt_len = aead_encrypt_pack(msg, msg_len, out, out_size);
+        alt_len = aead_encrypt_pack(CRYPTO_KEY, msg, msg_len, out, out_size);
         if (alt_len < 0) {
             print("[WARN] ENC fail, dropping message\n");
             return -1;
         }
         print("[ENC]\n");
     } else {
-        alt_len = aead_decrypt_unpack(msg, msg_len, out, out_size);
+        alt_len = aead_decrypt_unpack(CRYPTO_KEY, msg, msg_len, out, out_size);
         if (alt_len < 0) {
             print("[WARN] DEC fail, dropping message\n");
             return -1;

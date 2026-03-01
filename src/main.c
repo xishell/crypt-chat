@@ -62,8 +62,6 @@ void send_user_message(uart_config_t *uart, unsigned char user_id,
     }
     print("\n");
 
-    *TIMER_CONTROL = 0x08;
-
     unsigned char payload_with_id[CHAT_MAX_MESSAGE + 1];
     payload_with_id[0] = user_id;
     for (int i = 0; i < msg_len; i++) {
@@ -96,8 +94,6 @@ void send_user_message(uart_config_t *uart, unsigned char user_id,
         print("[FAIL] Stuffing error\n");
     }
 
-    /* Restart timer interrupt */
-    uart_rx_init_interrupt(uart);
 }
 
 /* Send message triggered by button (switch values) */
@@ -140,17 +136,15 @@ static int transform_message(unsigned char user_id,
     if (user_id == USER_ID_BOARD) {
         alt_len = aead_encrypt_pack(msg, msg_len, out, out_size);
         if (alt_len < 0) {
-            print("[WARN] ENC fail, echoing plaintext\n");
-            for (int i = 0; i < msg_len; i++) out[i] = msg[i];
-            return msg_len;
+            print("[WARN] ENC fail, dropping message\n");
+            return -1;
         }
         print("[ENC]\n");
     } else {
         alt_len = aead_decrypt_unpack(msg, msg_len, out, out_size);
         if (alt_len < 0) {
-            print("[WARN] DEC fail, echoing as-is\n");
-            for (int i = 0; i < msg_len; i++) out[i] = msg[i];
-            return msg_len;
+            print("[WARN] DEC fail, dropping message\n");
+            return -1;
         }
         print("[DEC]\n");
     }
@@ -191,6 +185,11 @@ static void process_frame(uart_config_t *uart) {
 
     unsigned char alt[CHAT_MAX_MESSAGE];
     int alt_len = transform_message(user_id, &unstuffed[1], msg_len, alt, CHAT_MAX_MESSAGE);
+
+    if (alt_len < 0) {
+        print("[ERROR] Crypto transform failed, not sending\n");
+        return;
+    }
 
     send_user_message(uart, user_id, alt, alt_len);
     led_toggle(0);

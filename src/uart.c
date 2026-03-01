@@ -149,7 +149,12 @@ static volatile int rx_bit_count = 0;
 static volatile unsigned int rx_isr_count = 0;
 static volatile unsigned int rx_bytes_received = 0;
 
-/* RX ring buffer */
+/*
+ * RX ring buffer — single-producer (ISR writes head) / single-consumer
+ * (main loop reads tail).  Safe without locks on single-core bare-metal
+ * RISC-V because each index is only written by one side and volatile
+ * prevents reordering.
+ */
 static volatile unsigned char rx_buffer[UART_RX_BUFFER_SIZE];
 static volatile int rx_buffer_head = 0;
 static volatile int rx_buffer_tail = 0;
@@ -281,29 +286,24 @@ void uart_rx_debug_stats(void) {
     print("\n");
 }
 
-/* ===== Accurate TX (timer) ===== */
+/* ===== Accurate TX (busy-wait) ===== */
 
-/* One-shot helper for TX timing */
-static void timer_delay_cycles_tx(unsigned int cycles) {
-    *TIMER_CONTROL = 0x08; /* STOP */
-    *TIMER_PERIODL = cycles & 0xFFFF;
-    *TIMER_PERIODH = (cycles >> 16) & 0xFFFF;
-    *TIMER_CONTROL = 0x04; /* START one-shot */
-    while ((*TIMER_STATUS & 0x01) == 0) ;
-    *TIMER_STATUS = 0;
+/* Busy-wait delay in CPU cycles without using the hardware timer */
+static void busywait_cycles(unsigned int cycles) {
+    for (volatile unsigned int i = 0; i < cycles; i++) ;
 }
 
-/* Send one character (precise timing) */
+/* Send one character using busy-wait delays to avoid conflicting with the RX timer */
 void uart_tx_char(uart_config_t *config, char c) {
-    unsigned int bit_delay_cycles = (30000000 / config->baud);
+    unsigned int bit_delay_cycles = CPU_FREQ_HZ / config->baud;
     gpio_write(config->tx_pin, 0); /* start */
-    timer_delay_cycles_tx(bit_delay_cycles);
+    busywait_cycles(bit_delay_cycles);
     for (int i = 0; i < 8; i++) {
         gpio_write(config->tx_pin, (c >> i) & 0x1);
-        timer_delay_cycles_tx(bit_delay_cycles);
+        busywait_cycles(bit_delay_cycles);
     }
     gpio_write(config->tx_pin, 1); /* stop */
-    timer_delay_cycles_tx(bit_delay_cycles);
+    busywait_cycles(bit_delay_cycles);
 }
 
 /* Send bytes (precise timing) */

@@ -9,10 +9,13 @@ void (*button_isr)(unsigned int) = 0;
 
 /* ===== JTAG UART ===== */
 
-/* Print one character to the JTAG UART */
+/* Print one character to the JTAG UART (with timeout to avoid lockup) */
 void printc(char c) {
-    while (((*JTAG_UART_CTRL) & JTAG_UART_WSPACE_MASK) == 0)
-        ;
+    int timeout = 100000;
+    while (((*JTAG_UART_CTRL) & JTAG_UART_WSPACE_MASK) == 0) {
+        if (--timeout <= 0)
+            return;
+    }
     *JTAG_UART_DATA = c;
 }
 

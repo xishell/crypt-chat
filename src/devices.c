@@ -122,19 +122,9 @@ void display_decimal(unsigned int number) {
         number = 999999;
     }
 
-    /* Extract decimal digits */
-    int leading_zero = 1;
-    for (int i = NUM_DISPLAYS - 1; i >= 0; i--) {
-        unsigned char digit = (number / 1) % 10;
-
-        /* Skip leading zeros except for the last digit */
-        if (digit == 0 && leading_zero && i > 0) {
-            display_clear(i);
-        } else {
-            display_digit(i, digit);
-            leading_zero = 0;
-        }
-
+    /* Fill right-to-left: digit 0 = ones, digit 1 = tens, etc. */
+    for (int i = 0; i < NUM_DISPLAYS; i++) {
+        display_digit(i, number % 10);
         number /= 10;
     }
 }

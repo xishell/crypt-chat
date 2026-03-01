@@ -50,3 +50,17 @@ bin = custom_target('crypt-chat.bin',
 run_target('upload',
   command: ['bash', meson.project_source_root() / 'run_lab.sh'],
 )
+
+# Host shared library for Python ctypes usage
+host_sources = files(
+  'src/chacha20.c',
+  'src/poly1305.c',
+  'src/chat_protocol.c',
+  'src/aead.c',
+)
+
+shared_library('chatcrypto',
+  host_sources,
+  include_directories: inc,
+  native: true,
+)

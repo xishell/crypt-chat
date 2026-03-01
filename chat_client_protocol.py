@@ -13,13 +13,15 @@ Example:
 
 import sys
 import argparse
+import ctypes
 import socket
 import select
 import threading
 import os
 from enum import Enum
+from pathlib import Path
 
-# Protocol constants
+# Protocol constants (must match chat_protocol.h)
 CHAT_SYNC_BYTE = 0xAA
 CHAT_ESCAPE_BYTE = 0xAB
 CHAT_MAX_MESSAGE = 127
@@ -38,110 +40,84 @@ KEY = bytearray([
 ])
 
 
-# ---- ChaCha20-Poly1305 (standalone helpers) ----
+# ---- Load shared C library ----
 
-def _rotl32(x, n):
-    return ((x << n) & 0xFFFFFFFF) | ((x & 0xFFFFFFFF) >> (32 - n))
+def _find_libchatcrypto():
+    """Find libchatcrypto.so relative to this script."""
+    script_dir = Path(__file__).resolve().parent
+    candidates = [
+        script_dir / "build" / "libchatcrypto.so",
+        script_dir / "builddir" / "libchatcrypto.so",
+    ]
+    for path in candidates:
+        if path.exists():
+            return str(path)
+    raise FileNotFoundError(
+        "libchatcrypto.so not found. Build it with: meson setup build --cross-file cross/riscv32.ini && ninja -C build"
+    )
 
-def _load32_le(b):
-    return b[0] | (b[1] << 8) | (b[2] << 16) | (b[3] << 24)
+_lib = ctypes.CDLL(_find_libchatcrypto())
 
-def _store32_le(w):
-    return bytes([w & 0xFF, (w >> 8) & 0xFF, (w >> 16) & 0xFF, (w >> 24) & 0xFF])
+# crc16_ccitt(const unsigned char *data, int len) -> unsigned short
+_lib.crc16_ccitt.argtypes = [ctypes.c_char_p, ctypes.c_int]
+_lib.crc16_ccitt.restype = ctypes.c_ushort
 
-def _quarter_round(a, b, c, d):
-    a = (a + b) & 0xFFFFFFFF; d ^= a; d = _rotl32(d, 16)
-    c = (c + d) & 0xFFFFFFFF; b ^= c; b = _rotl32(b, 12)
-    a = (a + b) & 0xFFFFFFFF; d ^= a; d = _rotl32(d, 8)
-    c = (c + d) & 0xFFFFFFFF; b ^= c; b = _rotl32(b, 7)
-    return a, b, c, d
+# byte_stuff(input, input_len, output, max_output) -> int
+_lib.byte_stuff.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+_lib.byte_stuff.restype = ctypes.c_int
 
-def _chacha_block(state):
-    s = state[:]
-    for _ in range(10):
-        s[0], s[4], s[8], s[12] = _quarter_round(s[0], s[4], s[8], s[12])
-        s[1], s[5], s[9], s[13] = _quarter_round(s[1], s[5], s[9], s[13])
-        s[2], s[6], s[10], s[14] = _quarter_round(s[2], s[6], s[10], s[14])
-        s[3], s[7], s[11], s[15] = _quarter_round(s[3], s[7], s[11], s[15])
-        s[0], s[5], s[10], s[15] = _quarter_round(s[0], s[5], s[10], s[15])
-        s[1], s[6], s[11], s[12] = _quarter_round(s[1], s[6], s[11], s[12])
-        s[2], s[7], s[8], s[13] = _quarter_round(s[2], s[7], s[8], s[13])
-        s[3], s[4], s[9], s[14] = _quarter_round(s[3], s[4], s[9], s[14])
-    for i in range(16):
-        s[i] = (s[i] + state[i]) & 0xFFFFFFFF
-    return b"".join(_store32_le(w) for w in s)
+# byte_unstuff(input, input_len, output, max_output) -> int
+_lib.byte_unstuff.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+_lib.byte_unstuff.restype = ctypes.c_int
 
-def chacha20_xor(key: bytes, nonce: bytes, counter: int, data: bytes) -> bytes:
-    out = bytearray(len(data))
-    pos = 0
-    while pos < len(data):
-        state = [
-            0x61707865, 0x3320646E, 0x79622D32, 0x6B206574,
-        ] + [_load32_le(key[i:i+4]) for i in range(0, 32, 4)] + [
-            counter & 0xFFFFFFFF,
-            _load32_le(nonce[0:4]),
-            _load32_le(nonce[4:8]),
-            _load32_le(nonce[8:12]),
-        ]
-        block = _chacha_block(state)
-        take = min(64, len(data) - pos)
-        for i in range(take):
-            out[pos + i] = data[pos + i] ^ block[i]
-        counter = (counter + 1) & 0xFFFFFFFF
-        pos += take
-    return bytes(out)
+# aead_encrypt_pack(key, pt, pt_len, out, max_out) -> int
+_lib.aead_encrypt_pack.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+_lib.aead_encrypt_pack.restype = ctypes.c_int
 
-def _le_bytes_to_int(b: bytes) -> int:
-    v = 0
-    for i in range(len(b)):
-        v |= b[i] << (8 * i)
-    return v
+# aead_decrypt_unpack(key, in, in_len, pt, max_pt) -> int
+_lib.aead_decrypt_unpack.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+_lib.aead_decrypt_unpack.restype = ctypes.c_int
 
-def _int_to_le_bytes(x: int, length: int) -> bytes:
-    out = bytearray(length)
-    for i in range(length):
-        out[i] = (x >> (8 * i)) & 0xFF
-    return bytes(out)
 
-def poly1305_tag(msg: bytes, one_time_key: bytes) -> bytes:
-    r = _le_bytes_to_int(one_time_key[:16])
-    r &= 0x0ffffffc0ffffffc0ffffffc0fffffff
-    s = _le_bytes_to_int(one_time_key[16:32])
-    p = (1 << 130) - 5
-    acc = 0
-    i = 0
-    while i < len(msg):
-        block = msg[i:i+16]
-        n = _le_bytes_to_int(block + b"\x01")
-        acc = (acc + n) % p
-        acc = (acc * r) % p
-        i += 16
-    tag = (acc + s) % (1 << 128)
-    return _int_to_le_bytes(tag, 16)
+# ---- Wrappers around C functions ----
 
-def derive_poly_key(key: bytes, nonce: bytes) -> bytes:
-    return chacha20_xor(key, nonce, 0, bytes(32))
+def crc16_ccitt(data: bytes) -> int:
+    return _lib.crc16_ccitt(data, len(data))
 
-def aead_encrypt(key: bytes, plaintext: bytes) -> bytes:
-    """Encrypt and return nonce(12) + ciphertext + tag(16)."""
-    nonce = os.urandom(12)
-    ct = chacha20_xor(key, nonce, 1, plaintext)
-    otk = derive_poly_key(key, nonce)
-    tag = poly1305_tag(ct, otk)
-    return nonce + ct + tag
+def byte_stuff(data: bytes) -> bytes | None:
+    out = ctypes.create_string_buffer(CHAT_MAX_FRAME)
+    n = _lib.byte_stuff(data, len(data), out, CHAT_MAX_FRAME)
+    if n < 0:
+        return None
+    return out.raw[:n]
+
+def byte_unstuff(data: bytes) -> bytes | None:
+    out = ctypes.create_string_buffer(CHAT_MAX_FRAME)
+    n = _lib.byte_unstuff(data, len(data), out, CHAT_MAX_FRAME)
+    if n < 0:
+        return None
+    return out.raw[:n]
+
+def aead_encrypt(key: bytes, plaintext: bytes) -> bytes | None:
+    max_out = 12 + len(plaintext) + 16
+    out = ctypes.create_string_buffer(max_out)
+    n = _lib.aead_encrypt_pack(key, plaintext, len(plaintext), out, max_out)
+    if n < 0:
+        return None
+    return out.raw[:n]
 
 def aead_decrypt(key: bytes, packed: bytes) -> bytes | None:
-    """Decrypt nonce(12) + ciphertext + tag(16). Returns None on auth failure."""
     if len(packed) < 28:
         return None
-    nonce = packed[:12]
-    ct = packed[12:-16]
-    tag = packed[-16:]
-    otk = derive_poly_key(key, nonce)
-    if poly1305_tag(ct, otk) != tag:
+    max_pt = len(packed) - 28
+    out = ctypes.create_string_buffer(max_pt + 1)  # +1 to avoid zero-length buffer
+    n = _lib.aead_decrypt_unpack(key, packed, len(packed), out, max_pt + 1)
+    if n < 0:
         return None
-    return chacha20_xor(key, nonce, 1, ct)
+    return out.raw[:n]
 
+
+# ---- Protocol framing ----
 
 class RxState(Enum):
     PLAINTEXT = 0
@@ -149,111 +125,39 @@ class RxState(Enum):
     SYNC2 = 2
     DATA = 3
 
-class ChatProtocol:
-    """Implements the robust chat protocol with CRC16 and byte stuffing"""
+def encode_frame(user_id: int, message: bytes) -> bytes:
+    """Encode message into protocol frame: [0xAA 0xAA] [LEN] [STUFFED_DATA]
+    where STUFFED_DATA contains: [USER_ID] [MESSAGE...] [CRC_HI] [CRC_LO]"""
+    payload_with_id = bytes([user_id]) + message
+    crc = crc16_ccitt(payload_with_id)
+    payload = payload_with_id + bytes([(crc >> 8) & 0xFF, crc & 0xFF])
 
-    @staticmethod
-    def crc16_ccitt(data):
-        """Calculate CRC16-CCITT (polynomial 0x1021, initial 0xFFFF)"""
-        crc = 0xFFFF
-        for byte in data:
-            crc ^= (byte << 8)
-            for _ in range(8):
-                if crc & 0x8000:
-                    crc = (crc << 1) ^ 0x1021
-                else:
-                    crc = crc << 1
-                crc &= 0xFFFF  # Keep 16-bit
-        return crc
+    stuffed = byte_stuff(payload)
+    if stuffed is None or len(stuffed) > CHAT_MAX_FRAME:
+        raise ValueError("Frame too large after stuffing")
 
-    @staticmethod
-    def byte_stuff(data):
-        """Apply byte stuffing: 0xAA -> 0xAB 0x00, 0xAB -> 0xAB 0x01"""
-        result = bytearray()
-        for byte in data:
-            if byte == CHAT_SYNC_BYTE:
-                result.append(CHAT_ESCAPE_BYTE)
-                result.append(0x00)
-            elif byte == CHAT_ESCAPE_BYTE:
-                result.append(CHAT_ESCAPE_BYTE)
-                result.append(0x01)
-            else:
-                result.append(byte)
-        return bytes(result)
+    return bytes([CHAT_SYNC_BYTE, CHAT_SYNC_BYTE, len(stuffed)]) + stuffed
 
-    @staticmethod
-    def byte_unstuff(data):
-        """Remove byte stuffing"""
-        result = bytearray()
-        i = 0
-        while i < len(data):
-            if data[i] == CHAT_ESCAPE_BYTE:
-                i += 1
-                if i >= len(data):
-                    return None  # Invalid
-                if data[i] == 0x00:
-                    result.append(CHAT_SYNC_BYTE)
-                elif data[i] == 0x01:
-                    result.append(CHAT_ESCAPE_BYTE)
-                else:
-                    return None  # Invalid
-                i += 1
-            else:
-                result.append(data[i])
-                i += 1
-        return bytes(result)
+def decode_frame(stuffed_data: bytes) -> tuple:
+    """Decode stuffed frame data, verify CRC, return (user_id, message) or (None, None)"""
+    unstuffed = byte_unstuff(stuffed_data)
+    if unstuffed is None or len(unstuffed) < 4:
+        return (None, None)
 
-    @staticmethod
-    def encode_frame(user_id, message):
-        """Encode message into protocol frame: [0xAA 0xAA] [LEN] [STUFFED_DATA]
-        where STUFFED_DATA contains: [USER_ID] [MESSAGE...] [CRC_HI] [CRC_LO]"""
-        # Convert message to bytes if string
-        if isinstance(message, str):
-            message = message.encode('utf-8')
+    user_id = unstuffed[0]
+    msg_with_id_len = len(unstuffed) - 2
+    message = unstuffed[1:msg_with_id_len]
+    received_crc = (unstuffed[msg_with_id_len] << 8) | unstuffed[msg_with_id_len + 1]
+    calculated_crc = crc16_ccitt(unstuffed[:msg_with_id_len])
 
-        # Prepare payload with user ID: [USER_ID] [MESSAGE]
-        payload_with_id = bytes([user_id]) + message
+    if received_crc != calculated_crc:
+        print(f"[DEBUG] CRC mismatch: RX={received_crc:04X} Calc={calculated_crc:04X}")
+        return (None, None)
 
-        # Calculate CRC over [USER_ID] [MESSAGE]
-        crc = ChatProtocol.crc16_ccitt(payload_with_id)
+    return (user_id, message)
 
-        # Prepare final payload: [USER_ID] [MESSAGE] + CRC (big-endian)
-        payload = payload_with_id + bytes([(crc >> 8) & 0xFF, crc & 0xFF])
 
-        # Apply byte stuffing
-        stuffed = ChatProtocol.byte_stuff(payload)
-
-        if len(stuffed) > CHAT_MAX_FRAME:
-            raise ValueError("Frame too large after stuffing")
-
-        # Build frame: [SYNC SYNC] [LEN] [STUFFED_DATA]
-        frame = bytes([CHAT_SYNC_BYTE, CHAT_SYNC_BYTE, len(stuffed)]) + stuffed
-        return frame
-
-    @staticmethod
-    def decode_frame(stuffed_data):
-        """Decode stuffed frame data, verify CRC, return (user_id, message) or (None, None)"""
-        # Unstuff
-        unstuffed = ChatProtocol.byte_unstuff(stuffed_data)
-        if unstuffed is None or len(unstuffed) < 4:  # USER_ID + 1 byte msg + 2 byte CRC
-            return (None, None)
-
-        # Extract user_id
-        user_id = unstuffed[0]
-
-        # Extract message and CRC (CRC is over [USER_ID] [MESSAGE])
-        msg_with_id_len = len(unstuffed) - 2
-        message = unstuffed[1:msg_with_id_len]  # Message starts at index 1
-        received_crc = (unstuffed[msg_with_id_len] << 8) | unstuffed[msg_with_id_len + 1]
-
-        # Verify CRC over [USER_ID] [MESSAGE]
-        calculated_crc = ChatProtocol.crc16_ccitt(unstuffed[:msg_with_id_len])
-
-        if received_crc != calculated_crc:
-            print(f"[DEBUG] CRC mismatch: RX={received_crc:04X} Calc={calculated_crc:04X}")
-            return (None, None)
-
-        return (user_id, message)
+# ---- Chat client ----
 
 class ChatClient:
     def __init__(self, host, port=23, user_id=USER_ID_CLIENT):
@@ -331,7 +235,7 @@ class ChatClient:
             self.rx_frame_buffer.append(byte)
 
             if len(self.rx_frame_buffer) >= self.rx_expected_length:
-                user_id, message = ChatProtocol.decode_frame(bytes(self.rx_frame_buffer))
+                user_id, message = decode_frame(bytes(self.rx_frame_buffer))
 
                 if message is not None and user_id != self.user_id:
                     message = self._try_decrypt(message)
@@ -370,7 +274,10 @@ class ChatClient:
             payload = message.encode('utf-8') if isinstance(message, str) else message
             if self.user_id != USER_ID_BOARD:
                 payload = aead_encrypt(bytes(KEY), payload)
-            frame = ChatProtocol.encode_frame(self.user_id, payload)
+                if payload is None:
+                    print("[ERROR] Encryption failed")
+                    return
+            frame = encode_frame(self.user_id, payload)
             self.sock.sendall(frame)
             print(f"[TX] {message}")
         except Exception as e:

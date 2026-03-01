@@ -39,6 +39,11 @@ chat_framer_result_t chat_framer_feed(chat_framer_t *f, unsigned char byte) {
         return CHAT_FRAMER_NEED_MORE;
 
     case CHAT_FRAMER_STATE_DATA:
+        if (f->index >= CHAT_MAX_FRAME) {
+            f->state = CHAT_FRAMER_STATE_PLAINTEXT;
+            f->index = 0;
+            return CHAT_FRAMER_ERROR;
+        }
         f->buffer[f->index++] = byte;
         if (f->index >= f->expected_length) {
             f->has_frame = 1;

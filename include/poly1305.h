@@ -1,7 +1,8 @@
 #ifndef POLY1305_H
 #define POLY1305_H
 
-#include "basetypes.h"   /* egna datatyper */
+#include <stdint.h>
+#include <stddef.h>
 
 /* Konstanter */
 #define POLY1305_TAGLEN    16u   /* 16-byte MAC-tag */

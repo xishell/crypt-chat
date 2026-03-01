@@ -2,7 +2,8 @@
 #ifndef PROTO_H
 #define PROTO_H
 
-#include "basetypes.h"   /* definierar: uint8_t, uint16_t, size_t */
+#include <stdint.h>
+#include <stddef.h>
 
 // --- Konstanter --- 
 #define MAGIC       0xC1      // paketstart

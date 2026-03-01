@@ -1,7 +1,8 @@
 #ifndef CHACHA20_H
 #define CHACHA20_H
 
-#include "basetypes.h"   /* egna grundtyper */
+#include <stdint.h>
+#include <stddef.h>
 
 /* Tillståndsstruktur: 16 st 32-bitars ord */
 typedef struct {
